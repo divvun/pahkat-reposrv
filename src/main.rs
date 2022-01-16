@@ -18,7 +18,7 @@ use pahkat_repomgr::package;
 use pahkat_types::{package::Descriptor, package_key::PackageKeyParams};
 use parking_lot::RwLock;
 use poem::{
-    error::{BadRequest, InternalServerError, NotFoundError},
+    error::{BadRequest, Conflict, InternalServerError, NotFoundError},
     http::StatusCode,
     listener::TcpListener,
     web::Data,
@@ -116,6 +116,10 @@ enum PackageUpdateError {
 #[derive(Debug, thiserror::Error)]
 #[error("Missing query parameter for `platform`")]
 struct MissingQueryParamPlatformError;
+
+#[derive(Debug, thiserror::Error)]
+#[error("Package with identifier `{0}` already exists.")]
+struct PackageExistsError(String);
 
 fn generate_repo_index(path: &path::Path) -> Result<Vec<u8>, std::io::Error> {
     tracing::debug!("Attempting to load repo in path: {:?}", &path);
@@ -227,6 +231,17 @@ impl Api {
 
         let mut guard = git_repo_mutex.write();
 
+        if guard
+            .path
+            .join(&repo_id.0)
+            .join("packages")
+            .join(&package_id.0)
+            .join("index.toml")
+            .exists()
+        {
+            return Err(Conflict(PackageExistsError(package_id.0.clone())));
+        }
+
         guard.cleanup().map_err(|e| InternalServerError(e))?;
 
         package::init::init(
@@ -272,6 +287,17 @@ impl Api {
         }
 
         let mut guard = git_repo_mutex.write();
+
+        if !guard
+            .path
+            .join(&repo_id.0)
+            .join("packages")
+            .join(&package_id.0)
+            .join("index.toml")
+            .exists()
+        {
+            return Err(NotFoundError.into());
+        }
 
         guard.cleanup().map_err(|e| InternalServerError(e))?;
         modify_repo_metadata(&guard.path, &package_id.0, &data.0)
