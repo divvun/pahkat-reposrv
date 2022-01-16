@@ -15,9 +15,11 @@ use arc_swap::ArcSwap;
 use chrono::{DateTime, Utc};
 use fbs::FlatBufferBuilder;
 use pahkat_repomgr::package;
-use parking_lot::FairMutex;
+use pahkat_types::{package::Descriptor, package_key::PackageKeyParams};
+use parking_lot::RwLock;
 use poem::{
     error::{BadRequest, InternalServerError, NotFoundError},
+    http::StatusCode,
     listener::TcpListener,
     web::Data,
     EndpointExt, Request, Result, Route,
@@ -25,7 +27,7 @@ use poem::{
 use poem_openapi::{
     auth::Bearer,
     param::Path,
-    payload::{Binary, Json},
+    payload::{Binary, Json, Response},
     Object, OpenApi, OpenApiService, SecurityScheme,
 };
 use serde::{Deserialize, Serialize};
@@ -110,6 +112,10 @@ enum PackageUpdateError {
     #[error("Repo error")]
     RepoError(#[source] package::update::Error),
 }
+
+#[derive(Debug, thiserror::Error)]
+#[error("Missing query parameter for `platform`")]
+struct MissingQueryParamPlatformError;
 
 fn generate_repo_index(path: &path::Path) -> Result<Vec<u8>, std::io::Error> {
     tracing::debug!("Attempting to load repo in path: {:?}", &path);
@@ -219,7 +225,7 @@ impl Api {
             return Err(NotFoundError.into());
         }
 
-        let mut guard = git_repo_mutex.lock();
+        let mut guard = git_repo_mutex.write();
 
         guard.cleanup().map_err(|e| InternalServerError(e))?;
 
@@ -234,7 +240,8 @@ impl Api {
         )
         .map_err(BadRequest)?;
 
-        guard.add_package_to_index_tree(&repo_id.0, &package_id.0)
+        guard
+            .add_package_to_index_tree(&repo_id.0, &package_id.0)
             .map_err(|e| InternalServerError(e))?;
         guard
             .commit_create(&repo_id.0, &package_id.0)
@@ -264,12 +271,13 @@ impl Api {
             return Err(NotFoundError.into());
         }
 
-        let mut guard = git_repo_mutex.lock();
+        let mut guard = git_repo_mutex.write();
 
         guard.cleanup().map_err(|e| InternalServerError(e))?;
         modify_repo_metadata(&guard.path, &package_id.0, &data.0)
             .map_err(|e| InternalServerError(e))?;
-        guard.add_package_to_index_tree(&repo_id.0, &package_id.0)
+        guard
+            .add_package_to_index_tree(&repo_id.0, &package_id.0)
             .map_err(|e| InternalServerError(e))?;
         guard
             .commit_update(&repo_id.0, &package_id.0, &data.0)
@@ -283,6 +291,56 @@ impl Api {
             error: None,
             timestamp: Utc::now(),
         }))
+    }
+
+    #[oai(path = "/:repo_id/download/:package_id", method = "get")]
+    async fn download(
+        &self,
+        git_repo_mutex: Data<&GitRepoMutex>,
+        config: Data<&Config>,
+        repo_id: Path<String>,
+        package_id: Path<String>,
+        params: poem::web::Query<PackageKeyParams>,
+    ) -> Result<Response<Binary<String>>> {
+        if !config.repos.contains(&repo_id) {
+            return Err(NotFoundError.into());
+        }
+
+        let platform = match params.0.platform {
+            Some(v) => v,
+            None => {
+                return Err(BadRequest(MissingQueryParamPlatformError));
+            }
+        };
+
+        let guard = git_repo_mutex.read();
+
+        let index = std::fs::read_to_string(
+            guard
+                .path
+                .join(&repo_id.0)
+                .join("packages")
+                .join(&package_id.0)
+                .join("index.toml"),
+        )
+        .map_err(InternalServerError)?;
+        let descriptor: Descriptor = ::toml::from_str(&index).map_err(InternalServerError)?;
+
+        for release in descriptor.release {
+            if release.channel != params.0.channel {
+                continue;
+            }
+
+            let target = release.target.iter().find(|x| x.platform == platform);
+            if let Some(target) = target {
+                let url = target.payload.url();
+                return Ok(Response::new(Binary("".into()))
+                    .status(StatusCode::TEMPORARY_REDIRECT)
+                    .header("Location", url.as_str()));
+            }
+        }
+
+        Err(NotFoundError.into())
     }
 
     #[oai(path = "/:repo_id/packages/:package_id/index.toml", method = "get")]
@@ -353,7 +411,7 @@ async fn refresh_indexes(
     repo_indexes: RepoIndexes,
 ) -> Result<(), std::io::Error> {
     let (tmpdir, head_ref) = {
-        let guard = git_repo_mutex.lock();
+        let guard = git_repo_mutex.read();
         (guard.shallow_clone_to_tempdir()?, guard.head_ref.clone())
     };
 
@@ -426,11 +484,7 @@ impl GitRepo {
         Ok(())
     }
 
-    fn commit_create(
-        &mut self,
-        repo_id: &str,
-        package_id: &str,
-    ) -> Result<(), std::io::Error> {
+    fn commit_create(&mut self, repo_id: &str, package_id: &str) -> Result<(), std::io::Error> {
         Command::new("git")
             .args(&["commit", "-m"])
             .arg(format!("[{}:create] `{}`", repo_id, package_id))
@@ -498,19 +552,18 @@ impl GitRepo {
     }
 }
 
-type GitRepoMutex = Arc<FairMutex<GitRepo>>;
+type GitRepoMutex = Arc<RwLock<GitRepo>>;
 type RepoIndexes = Arc<HashMap<String, ArcSwap<(String, Vec<u8>)>>>;
 
 #[derive(Debug, Clone)]
 struct ServerToken(String);
 
 async fn run(config: Config) -> Result<(), std::io::Error> {
-    let git_repo_mutex: GitRepoMutex =
-        Arc::new(FairMutex::new(GitRepo::new(config.git_path.clone())));
+    let git_repo_mutex: GitRepoMutex = Arc::new(RwLock::new(GitRepo::new(config.git_path.clone())));
 
     tracing::info!("Cleaning up repo state...");
     {
-        let guard = git_repo_mutex.lock();
+        let guard = git_repo_mutex.write();
         guard.cleanup()?;
     }
 
