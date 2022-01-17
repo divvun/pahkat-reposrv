@@ -1001,6 +1001,7 @@ checksum = "624a8340c38c1b80fd549087862da4ba43e08858af025b236e509b6649fc13d5"
 [[package]]
 name = "pahkat-repomgr"
 version = "1.0.0-alpha.0"
+source = "git+https://github.com/divvun/pahkat.git#009842348c11730cf12e8f46af860b82e4411f35"
 dependencies = [
  "anyhow",
  "dialoguer",
@@ -1048,11 +1049,13 @@ dependencies = [
 [[package]]
 name = "pahkat-types"
 version = "1.0.0-alpha.0"
+source = "git+https://github.com/divvun/pahkat.git#009842348c11730cf12e8f46af860b82e4411f35"
 dependencies = [
  "chrono",
  "fbs",
  "fbs-build",
  "indexmap",
+ "poem",
  "poem-openapi",
  "semver 0.10.0",
  "serde",
@@ -1113,7 +1116,9 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
 name = "poem"
-version = "1.2.30"
+version = "1.2.36"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0d58e10ab7f28066b2f48a6d938896efe299b6d20728f29308be4ac0885f66f"
 dependencies = [
  "async-trait",
  "bytes 1.1.0",
@@ -1145,7 +1150,9 @@ dependencies = [
 
 [[package]]
 name = "poem-derive"
-version = "1.2.30"
+version = "1.2.36"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bff2b4d01de39ca6d30a2fde7b2d30d2c019fd0d3a7302ffaf71823f889fa3dc"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -1155,7 +1162,9 @@ dependencies = [
 
 [[package]]
 name = "poem-openapi"
-version = "1.2.30"
+version = "1.2.36"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "400f4b895bf2f989abec06429284f25f28e6da99e312bc7cd5079fa5f2d93102"
 dependencies = [
  "base64 0.13.0",
  "bytes 1.1.0",
@@ -1178,7 +1187,9 @@ dependencies = [
 
 [[package]]
 name = "poem-openapi-derive"
-version = "1.2.30"
+version = "1.2.36"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34e5a9692803e5786ee4fba4ec6bbfda80da01fd906822d610d992b365cfffa5"
 dependencies = [
  "Inflector",
  "darling",
