@@ -48,6 +48,7 @@ impl<T: Into<String> + Send> IntoResponse for Toml<T> {
     fn into_response(self) -> Response {
         Response::builder()
             .content_type(Self::CONTENT_TYPE)
+            .header("Content-Disposition", "inline")
             .body(self.0.into())
     }
 }
