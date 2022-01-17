@@ -209,6 +209,7 @@ struct ServerStatus {
 
 #[OpenApi]
 impl Api {
+    /// Server status
     #[oai(path = "/status", method = "get")]
     async fn status(&self, repo_indexes: Data<&RepoIndexes>) -> Result<Json<ServerStatus>> {
         let index_ref = repo_indexes
@@ -219,6 +220,7 @@ impl Api {
         Ok(Json(ServerStatus { index_ref }))
     }
 
+    /// Create package metadata
     #[oai(path = "/:repo_id/packages/:package_id", method = "post")]
     async fn create_package_metadata(
         &self,
@@ -276,6 +278,7 @@ impl Api {
         }))
     }
 
+    /// Update package metadata
     #[oai(path = "/:repo_id/packages/:package_id", method = "patch")]
     async fn update_package_metadata(
         &self,
@@ -323,6 +326,7 @@ impl Api {
         }))
     }
 
+    /// Download package
     #[oai(path = "/:repo_id/download/:package_id", method = "get")]
     async fn download(
         &self,
@@ -373,6 +377,7 @@ impl Api {
         Err(NotFoundError.into())
     }
 
+    /// Get package descriptor
     #[oai(path = "/:repo_id/packages/:package_id/index.toml", method = "get")]
     async fn package_descriptor(
         &self,
@@ -392,7 +397,9 @@ impl Api {
         Ok(Toml(output))
     }
 
-    /// Lang must end in .toml
+    /// Get i18n strings
+    /// 
+    /// {lang} must end in `.toml`.
     #[oai(path = "/:repo_id/strings/:lang", method = "get")]
     async fn strings(
         &self,
@@ -420,6 +427,7 @@ impl Api {
         Ok(Toml(output))
     }
 
+    /// Get repository index
     #[oai(path = "/:repo_id/index.bin", method = "get")]
     async fn repository_index(
         &self,
@@ -621,7 +629,7 @@ async fn run(config: Config) -> Result<(), std::io::Error> {
     let api_service =
         OpenApiService::new(Api, "Pahkat Repository Server", env!("CARGO_PKG_VERSION"))
             .server(&config.url);
-    let ui = api_service.swagger_ui();
+    let ui = api_service.rapidoc();
     let app = Route::new()
         .nest("/", api_service)
         .nest("/playground", ui)
