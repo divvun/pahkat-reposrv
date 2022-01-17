@@ -14,6 +14,10 @@ use std::{
 use arc_swap::ArcSwap;
 use chrono::{DateTime, Utc};
 use fbs::FlatBufferBuilder;
+use figment::{
+    providers::{Env, Format, Toml as FigmentToml},
+    Figment,
+};
 use pahkat_repomgr::package;
 use pahkat_types::{package::Descriptor, package_key::PackageKeyParams};
 use parking_lot::RwLock;
@@ -645,18 +649,22 @@ pub struct Config {
 #[derive(StructOpt)]
 struct Args {
     #[structopt(short, long)]
-    config_path: PathBuf,
+    config_path: Option<PathBuf>,
 }
 
 #[tokio::main]
-async fn main() -> Result<(), std::io::Error> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
     tracing::info!("starting pahkat-reposrv");
 
     let args = Args::from_args();
 
-    let config = std::fs::read_to_string(&args.config_path)?;
-    let config: Config = ::toml::from_str(&config)?;
+    let mut figment = Figment::new();
+    if let Some(config_path) = args.config_path {
+        figment = figment.merge(FigmentToml::file(config_path));
+    }
 
-    run(config).await
+    let config: Config = figment.merge(Env::raw()).extract()?;
+
+    Ok(run(config).await?)
 }
