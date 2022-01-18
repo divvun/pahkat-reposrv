@@ -599,7 +599,8 @@ impl GitRepo {
         Command::new("git")
             .args(&["clone", "--depth", "1"])
             .arg(format!("file://{}", &self.path.display()))
-            .arg(tmpdir.path());
+            .arg(tmpdir.path())
+            .status()?;
 
         Ok(tmpdir)
     }
