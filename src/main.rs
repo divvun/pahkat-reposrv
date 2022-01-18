@@ -427,9 +427,24 @@ impl Api {
         Ok(Toml(output))
     }
 
-    /// Get repository index
-    #[oai(path = "/:repo_id/index.bin", method = "get")]
-    async fn repository_index(
+    /// Get repository toml index
+    #[oai(path = "/:repo_id/index.toml", method = "get")]
+    async fn repository_index_toml(
+        &self,
+        config: Data<&Config>,
+        repo_id: Path<String>,
+    ) -> Result<Toml<String>> {
+        let index_path = config.git_path.join(&repo_id.0).join("index.toml");
+
+        let output =
+            std::fs::read_to_string(index_path).map_err(|_| poem::Error::from(NotFoundError))?;
+
+        Ok(Toml(output))
+    }
+
+    /// Get repository binary index
+    #[oai(path = "/:repo_id/packages/index.bin", method = "get")]
+    async fn repository_index_bin(
         &self,
         repo_indexes: Data<&RepoIndexes>,
         repo_id: Path<String>,
