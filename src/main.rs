@@ -248,7 +248,7 @@ impl Api {
             return Err(Conflict(PackageExistsError(package_id.0.clone())));
         }
 
-        guard.cleanup().map_err(|e| InternalServerError(e))?;
+        guard.cleanup(&config).map_err(|e| InternalServerError(e))?;
 
         package::init::init(
             package::init::Request::builder()
@@ -306,7 +306,7 @@ impl Api {
             return Err(NotFoundError.into());
         }
 
-        guard.cleanup().map_err(|e| InternalServerError(e))?;
+        guard.cleanup(&config).map_err(|e| InternalServerError(e))?;
         modify_repo_metadata(&guard.path, &package_id.0, &data.0)
             .map_err(|e| InternalServerError(e))?;
         guard
@@ -574,19 +574,19 @@ impl GitRepo {
         Ok(())
     }
 
-    fn cleanup(&self) -> Result<(), std::io::Error> {
+    fn cleanup(&self, config: &Config) -> Result<(), std::io::Error> {
         Command::new("git")
             .args(&["clean", "-dfx"])
             .current_dir(&self.path)
             .status()?;
 
         Command::new("git")
-            .args(&["fetch", "origin", "main"])
+            .args(&["fetch", "origin", &config.branch_name])
             .current_dir(&self.path)
             .status()?;
 
         Command::new("git")
-            .args(&["reset", "--hard", "origin/main"])
+            .args(&["reset", "--hard", &format!("origin/{}", config.branch_name)])
             .current_dir(&self.path)
             .status()?;
 
@@ -618,7 +618,7 @@ async fn run(config: Config) -> Result<(), std::io::Error> {
     tracing::info!("Cleaning up repo state...");
     {
         let guard = git_repo_mutex.write();
-        guard.cleanup()?;
+        guard.cleanup(&config)?;
     }
 
     let repo_indexes: RepoIndexes = Arc::new(
@@ -668,6 +668,12 @@ pub struct Config {
     host: String,
     port: u16,
     index_interval: u64,
+    #[serde(default = "default_branch_name")]
+    branch_name: String,
+}
+
+fn default_branch_name() -> String {
+    "main".to_string()
 }
 
 #[derive(StructOpt)]
