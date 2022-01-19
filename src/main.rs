@@ -268,7 +268,7 @@ impl Api {
         guard
             .commit_create(&repo_id.0, &package_id.0)
             .map_err(|e| InternalServerError(e))?;
-        guard.push().map_err(|e| InternalServerError(e))?;
+        guard.push(&config).map_err(|e| InternalServerError(e))?;
 
         Ok(Json(CreatePackageMetadataResponse {
             repo_id: repo_id.0,
@@ -316,7 +316,7 @@ impl Api {
         guard
             .commit_update(&repo_id.0, &package_id.0, &data.0)
             .map_err(|e| InternalServerError(e))?;
-        guard.push().map_err(|e| InternalServerError(e))?;
+        guard.push(&config).map_err(|e| InternalServerError(e))?;
 
         Ok(Json(UpdatePackageMetadataResponse {
             repo_id: repo_id.0.to_string(),
@@ -567,9 +567,9 @@ impl GitRepo {
         Ok(())
     }
 
-    fn push(&self) -> Result<(), std::io::Error> {
+    fn push(&self, config: &Config) -> Result<(), std::io::Error> {
         Command::new("git")
-            .args(&["push"])
+            .args(&["push", "origin", &format!("HEAD:{}", &config.branch_name)])
             .current_dir(&self.path)
             .status()?;
         Ok(())
