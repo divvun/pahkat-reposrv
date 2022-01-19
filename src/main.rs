@@ -114,7 +114,7 @@ enum PackageUpdateError {
     #[error("Invalid version provided")]
     VersionError(#[from] pahkat_types::package::version::Error),
 
-    #[error("Repo error")]
+    #[error("Repo error: {0}")]
     RepoError(#[source] package::update::Error),
 }
 
