@@ -1052,7 +1052,7 @@ dependencies = [
 
 [[package]]
 name = "pahkat-reposrv"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "arc-swap",
