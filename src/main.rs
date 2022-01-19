@@ -295,10 +295,9 @@ impl Api {
         }
 
         let mut guard = git_repo_mutex.write();
+        let repo_path = guard.path.join(&repo_id.0);
 
-        if !guard
-            .path
-            .join(&repo_id.0)
+        if !repo_path
             .join("packages")
             .join(&package_id.0)
             .join("index.toml")
@@ -308,7 +307,7 @@ impl Api {
         }
 
         guard.cleanup(&config).map_err(|e| InternalServerError(e))?;
-        modify_repo_metadata(&guard.path, &package_id.0, &data.0)
+        modify_repo_metadata(&repo_path, &package_id.0, &data.0)
             .map_err(|e| InternalServerError(e))?;
         guard
             .add_package_to_index_tree(&repo_id.0, &package_id.0)
