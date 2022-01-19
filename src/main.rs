@@ -61,6 +61,7 @@ struct UpdatePackageMetadataResponse {
 pub struct UpdatePackageMetadataRequest {
     pub version: String,
     pub channel: Option<String>,
+    #[oai(default)]
     pub authors: Vec<String>,
     pub license: Option<String>,
     pub license_url: Option<String>,
