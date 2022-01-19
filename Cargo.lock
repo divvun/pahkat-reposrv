@@ -1030,7 +1030,7 @@ checksum = "624a8340c38c1b80fd549087862da4ba43e08858af025b236e509b6649fc13d5"
 [[package]]
 name = "pahkat-repomgr"
 version = "1.0.0-alpha.0"
-source = "git+https://github.com/divvun/pahkat.git#9dc4a3dd155deda679d50a902ad7159d40f97a3a"
+source = "git+https://github.com/divvun/pahkat.git#b7a1350db4831809e14c924f1c43b3d31e836302"
 dependencies = [
  "anyhow",
  "dialoguer",
@@ -1079,7 +1079,7 @@ dependencies = [
 [[package]]
 name = "pahkat-types"
 version = "1.0.0-alpha.0"
-source = "git+https://github.com/divvun/pahkat.git#9dc4a3dd155deda679d50a902ad7159d40f97a3a"
+source = "git+https://github.com/divvun/pahkat.git#b7a1350db4831809e14c924f1c43b3d31e836302"
 dependencies = [
  "chrono",
  "fbs",
