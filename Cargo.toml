@@ -29,3 +29,7 @@ figment = { version = "0.10.6", features = ["toml", "env"] }
 
 [features]
 playground = []
+
+#[patch."https://github.com/divvun/pahkat.git"]
+#pahkat-types = { path = "../pahkat/pahkat-types" }
+#pahkat-repomgr = { path = "../pahkat/pahkat-repomgr" }
