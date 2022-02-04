@@ -398,7 +398,7 @@ impl Api {
     }
 
     /// Get i18n strings
-    /// 
+    ///
     /// {lang} must end in `.toml`.
     #[oai(path = "/:repo_id/strings/:lang", method = "get")]
     async fn strings(
@@ -411,6 +411,8 @@ impl Api {
             .0
             .strip_suffix(".toml")
             .ok_or_else(|| poem::Error::from(NotFoundError))?;
+
+        let lang = if lang.is_empty() { "en" } else { lang };
 
         let lang_path = config
             .git_path
