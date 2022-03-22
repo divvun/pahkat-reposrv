@@ -361,7 +361,7 @@ impl Api {
         let descriptor: Descriptor = ::toml::from_str(&index).map_err(InternalServerError)?;
 
         for release in descriptor.release {
-            if release.channel != params.0.channel {
+            if release.channel.as_deref().unwrap_or("stable") != params.0.channel.as_deref().unwrap_or("stable") {
                 continue;
             }
 
