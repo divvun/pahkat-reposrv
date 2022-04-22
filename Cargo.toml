@@ -1,6 +1,6 @@
 [package]
 name = "pahkat-reposrv"
-version = "0.2.7"
+version = "0.3.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -26,6 +26,7 @@ fbs = "0.6"
 anyhow = "1.0.52"
 tempfile = "3.3.0"
 figment = { version = "0.10.6", features = ["toml", "env"] }
+uuid = { version = "1.0.0", features = ["v4"] }
 
 [features]
 playground = []

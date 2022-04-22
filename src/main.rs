@@ -7,6 +7,7 @@ use std::{
     fmt::Display,
     path::{self, PathBuf},
     process::Command,
+    str::FromStr,
     sync::Arc,
     time::Duration,
 };
@@ -18,25 +19,31 @@ use figment::{
     providers::{Env, Format, Toml as FigmentToml},
     Figment,
 };
+use once_cell::sync::Lazy;
 use pahkat_repomgr::package;
-use pahkat_types::{package::Descriptor, package_key::PackageKeyParams};
+use pahkat_types::{
+    package::{version::SemanticVersion, Descriptor, DescriptorData, Release, Version},
+    package_key::PackageKeyParams,
+    payload::Target,
+};
 use parking_lot::RwLock;
 use poem::{
     error::{BadRequest, Conflict, InternalServerError, NotFoundError},
     http::StatusCode,
     listener::TcpListener,
-    web::Data,
+    web::{headers::UserAgent, Data},
     EndpointExt, Request, Result, Route,
 };
 use poem_openapi::{
     auth::Bearer,
-    param::Path,
+    param::{Header, Path},
     payload::{Binary, Json, Response},
     Object, OpenApi, OpenApiService, SecurityScheme,
 };
 use serde::{Deserialize, Serialize};
 use structopt::StructOpt;
 use tempfile::TempDir;
+use uuid::Uuid;
 
 use self::toml::Toml;
 
@@ -125,6 +132,82 @@ struct MissingQueryParamPlatformError;
 #[derive(Debug, thiserror::Error)]
 #[error("Package with identifier `{0}` already exists.")]
 struct PackageExistsError(String);
+
+fn generate_010_workaround_index(
+    config: &Config,
+    divvun_installer_repo_path: &std::path::Path,
+) -> Result<Vec<u8>, std::io::Error> {
+    let path = divvun_installer_repo_path
+        .join("packages")
+        .join("divvun-installer")
+        .join("index.toml");
+    tracing::trace!("Attempting read to string: {:?}", &path);
+    let file = match std::fs::read_to_string(&path) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("Could not handle path: {:?}", &path);
+            tracing::error!("{}", e);
+            tracing::error!("Continuing.");
+            return Err(e);
+        }
+    };
+    let mut package: pahkat_types::package::Descriptor = match ::toml::from_str(&file) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("Could not parse: {:?}", &path);
+            tracing::error!("{}", e);
+            tracing::error!("Continuing.");
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, e));
+        }
+    };
+
+    let mut windows_divvun_inst = package
+        .release
+        .into_iter()
+        .filter(|x| x.channel.is_none() && x.target.iter().any(|t| t.platform == "windows"))
+        .max_by_key(|x| match &x.version {
+            pahkat_types::package::Version::Semantic(v) => v.clone(),
+            _ => panic!("invalid version"),
+        })
+        .unwrap();
+
+    windows_divvun_inst.version = Version::Semantic(SemanticVersion::from_str("99.0.0").unwrap());
+
+    let index = windows_divvun_inst
+        .target
+        .iter()
+        .position(|x| x.platform == "windows")
+        .unwrap();
+
+    let mut target = windows_divvun_inst.target[index].clone();
+    let nonce = Uuid::new_v4().to_string();
+    target.payload.set_url(
+        format!(
+            "{}/1AAB4845-32A9-41A8-BBDE-120847548A81/divvun-installer-{}.exe",
+            config.url, nonce
+        )
+        .parse()
+        .unwrap(),
+    );
+
+    windows_divvun_inst.target = vec![target];
+    package.release = vec![windows_divvun_inst];
+    let pkg = pahkat_types::package::Package::Concrete(package);
+
+    let mut builder = FlatBufferBuilder::new();
+    let index = indexing::build_index(&mut builder, &[pkg]).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::Other, "failed to generate flatbuffer")
+    })?;
+    Ok(index.to_vec())
+}
+
+fn generate_empty_index() -> Result<Vec<u8>, std::io::Error> {
+    let mut builder = FlatBufferBuilder::new();
+    let index = indexing::build_index(&mut builder, &[]).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::Other, "failed to generate flatbuffer")
+    })?;
+    Ok(index.to_vec())
+}
 
 fn generate_repo_index(path: &path::Path) -> Result<Vec<u8>, std::io::Error> {
     tracing::debug!("Attempting to load repo in path: {:?}", &path);
@@ -326,6 +409,47 @@ impl Api {
         }))
     }
 
+    #[oai(
+        path = "/1AAB4845-32A9-41A8-BBDE-120847548A81/:filename",
+        method = "get"
+    )]
+    async fn workaround_download_divvun_manager(
+        &self,
+        git_repo_mutex: Data<&GitRepoMutex>,
+        _filename: Path<String>,
+    ) -> Result<Response<Binary<String>>> {
+        let platform = "windows";
+
+        let guard = git_repo_mutex.read();
+
+        let index = std::fs::read_to_string(
+            guard
+                .path
+                .join("divvun-installer")
+                .join("packages")
+                .join("divvun-installer")
+                .join("index.toml"),
+        )
+        .map_err(InternalServerError)?;
+        let descriptor: Descriptor = ::toml::from_str(&index).map_err(InternalServerError)?;
+
+        for release in descriptor.release {
+            if release.channel.as_deref().unwrap_or("stable") != "stable" {
+                continue;
+            }
+
+            let target = release.target.iter().find(|x| x.platform == platform);
+            if let Some(target) = target {
+                let url = target.payload.url();
+                return Ok(Response::new(Binary("".into()))
+                    .status(StatusCode::TEMPORARY_REDIRECT)
+                    .header("Location", url.as_str()));
+            }
+        }
+
+        Err(NotFoundError.into())
+    }
+
     /// Download package
     #[oai(path = "/:repo_id/download/:package_id", method = "get")]
     async fn download(
@@ -361,7 +485,9 @@ impl Api {
         let descriptor: Descriptor = ::toml::from_str(&index).map_err(InternalServerError)?;
 
         for release in descriptor.release {
-            if release.channel.as_deref().unwrap_or("stable") != params.0.channel.as_deref().unwrap_or("stable") {
+            if release.channel.as_deref().unwrap_or("stable")
+                != params.0.channel.as_deref().unwrap_or("stable")
+            {
                 continue;
             }
 
@@ -448,9 +574,27 @@ impl Api {
     #[oai(path = "/:repo_id/packages/index.bin", method = "get")]
     async fn repository_index_bin(
         &self,
+        config: Data<&Config>,
         repo_indexes: Data<&RepoIndexes>,
         repo_id: Path<String>,
+        #[oai(name = "User-Agent")] user_agent: Header<Option<String>>,
     ) -> Result<Binary<Vec<u8>>> {
+        let user_agent = user_agent.0.unwrap_or_else(|| "".to_string());
+
+        if user_agent == "pahkat-client/0.1.0" {
+            tracing::debug!("Detected old pahkat, serving workaround index");
+            if repo_id.0 == "divvun-installer" {
+                let index = generate_010_workaround_index(
+                    &config.0,
+                    &config.git_path.join("divvun-installer"),
+                )
+                .unwrap();
+                return Ok(Binary(index));
+            } else {
+                return Ok(Binary(generate_empty_index().unwrap()));
+            }
+        }
+
         match repo_indexes.get(&repo_id.0) {
             Some(state) => {
                 let state = state.load();
