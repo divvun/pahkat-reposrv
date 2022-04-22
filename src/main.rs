@@ -416,7 +416,7 @@ impl Api {
     async fn workaround_download_divvun_manager(
         &self,
         git_repo_mutex: Data<&GitRepoMutex>,
-        _filename: Path<String>,
+        filename: Path<String>,
     ) -> Result<Response<Binary<String>>> {
         let platform = "windows";
 
