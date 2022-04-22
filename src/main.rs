@@ -180,11 +180,11 @@ fn generate_010_workaround_index(
         .unwrap();
 
     let mut target = windows_divvun_inst.target[index].clone();
-    let nonce = Uuid::new_v4().to_string();
+    static NONCE: Lazy<String> = Lazy::new(|| Uuid::new_v4().to_string() );
     target.payload.set_url(
         format!(
             "{}/1AAB4845-32A9-41A8-BBDE-120847548A81/divvun-installer-{}.exe",
-            config.url, nonce
+            config.url, *NONCE
         )
         .parse()
         .unwrap(),
