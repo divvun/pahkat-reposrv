@@ -137,31 +137,67 @@ fn generate_010_workaround_index(
     config: &Config,
     divvun_installer_repo_path: &std::path::Path,
 ) -> Result<Vec<u8>, std::io::Error> {
-    let path = divvun_installer_repo_path
+    let dm_path = divvun_installer_repo_path
         .join("packages")
         .join("divvun-installer")
         .join("index.toml");
-    tracing::trace!("Attempting read to string: {:?}", &path);
-    let file = match std::fs::read_to_string(&path) {
+    let pahkat_path = divvun_installer_repo_path
+        .join("packages")
+        .join("pahkat-service")
+        .join("index.toml");
+
+    tracing::trace!("Attempting read to string: {:?}", &dm_path);
+    let dm_file = match std::fs::read_to_string(&dm_path) {
         Ok(v) => v,
         Err(e) => {
-            tracing::error!("Could not handle path: {:?}", &path);
+            tracing::error!("Could not handle path: {:?}", &dm_path);
             tracing::error!("{}", e);
             tracing::error!("Continuing.");
             return Err(e);
         }
     };
-    let mut package: pahkat_types::package::Descriptor = match ::toml::from_str(&file) {
+    tracing::trace!("Attempting read to string: {:?}", &pahkat_path);
+    let pahkat_file = match std::fs::read_to_string(&pahkat_path) {
         Ok(v) => v,
         Err(e) => {
-            tracing::error!("Could not parse: {:?}", &path);
+            tracing::error!("Could not handle path: {:?}", &pahkat_path);
+            tracing::error!("{}", e);
+            tracing::error!("Continuing.");
+            return Err(e);
+        }
+    };
+
+    let mut dm_package: pahkat_types::package::Descriptor = match ::toml::from_str(&dm_file) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("Could not parse: {:?}", &dm_path);
             tracing::error!("{}", e);
             tracing::error!("Continuing.");
             return Err(std::io::Error::new(std::io::ErrorKind::Other, e));
         }
     };
 
-    let mut windows_divvun_inst = package
+    let mut pahkat_package: pahkat_types::package::Descriptor = match ::toml::from_str(&pahkat_file) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("Could not parse: {:?}", &pahkat_path);
+            tracing::error!("{}", e);
+            tracing::error!("Continuing.");
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, e));
+        }
+    };
+
+    let mut windows_divvun_inst = dm_package
+        .release
+        .into_iter()
+        .filter(|x| x.channel.is_none() && x.target.iter().any(|t| t.platform == "windows"))
+        .max_by_key(|x| match &x.version {
+            pahkat_types::package::Version::Semantic(v) => v.clone(),
+            _ => panic!("invalid version"),
+        })
+        .unwrap();
+
+    let mut pahkat_inst = pahkat_package
         .release
         .into_iter()
         .filter(|x| x.channel.is_none() && x.target.iter().any(|t| t.platform == "windows"))
@@ -172,16 +208,24 @@ fn generate_010_workaround_index(
         .unwrap();
 
     windows_divvun_inst.version = Version::Semantic(SemanticVersion::from_str("99.0.0").unwrap());
+    pahkat_inst.version = Version::Semantic(SemanticVersion::from_str("99.0.0").unwrap());
 
-    let index = windows_divvun_inst
+    let dm_index = windows_divvun_inst
+        .target
+        .iter()
+        .position(|x| x.platform == "windows")
+        .unwrap();
+    let pahkat_index = pahkat_inst
         .target
         .iter()
         .position(|x| x.platform == "windows")
         .unwrap();
 
-    let mut target = windows_divvun_inst.target[index].clone();
+    let mut dm_target = windows_divvun_inst.target[dm_index].clone();
+    let mut pahkat_target = pahkat_inst.target[pahkat_index].clone();
+
     static NONCE: Lazy<String> = Lazy::new(|| Uuid::new_v4().to_string() );
-    target.payload.set_url(
+    dm_target.payload.set_url(
         format!(
             "{}/1AAB4845-32A9-41A8-BBDE-120847548A81/divvun-installer-{}.exe",
             config.url, *NONCE
@@ -189,13 +233,26 @@ fn generate_010_workaround_index(
         .parse()
         .unwrap(),
     );
+    pahkat_target.payload.set_url(
+        format!(
+            "{}/1AAB4845-32A9-41A8-BBDE-120847548A82/pahkat-service-{}.exe",
+            config.url, *NONCE
+        )
+        .parse()
+        .unwrap(),
+    );
 
-    windows_divvun_inst.target = vec![target];
-    package.release = vec![windows_divvun_inst];
-    let pkg = pahkat_types::package::Package::Concrete(package);
+    windows_divvun_inst.target = vec![dm_target];
+    pahkat_inst.target = vec![pahkat_target];
+
+    dm_package.release = vec![windows_divvun_inst];
+    pahkat_package.release = vec![pahkat_inst];
+
+    let dm_pkg = pahkat_types::package::Package::Concrete(dm_package);
+    let pahkat_pkg = pahkat_types::package::Package::Concrete(pahkat_package);
 
     let mut builder = FlatBufferBuilder::new();
-    let index = indexing::build_index(&mut builder, &[pkg]).map_err(|_| {
+    let index = indexing::build_index(&mut builder, &[dm_pkg, pahkat_pkg]).map_err(|_| {
         std::io::Error::new(std::io::ErrorKind::Other, "failed to generate flatbuffer")
     })?;
     Ok(index.to_vec())
@@ -407,6 +464,47 @@ impl Api {
             error: None,
             timestamp: Utc::now(),
         }))
+    }
+
+    #[oai(
+        path = "/1AAB4845-32A9-41A8-BBDE-120847548A82/:filename",
+        method = "get"
+    )]
+    async fn workaround_download_pahkat(
+        &self,
+        git_repo_mutex: Data<&GitRepoMutex>,
+        filename: Path<String>,
+    ) -> Result<Response<Binary<String>>> {
+        let platform = "windows";
+
+        let guard = git_repo_mutex.read();
+
+        let index = std::fs::read_to_string(
+            guard
+                .path
+                .join("divvun-installer")
+                .join("packages")
+                .join("pahkat-service")
+                .join("index.toml"),
+        )
+        .map_err(InternalServerError)?;
+        let descriptor: Descriptor = ::toml::from_str(&index).map_err(InternalServerError)?;
+
+        for release in descriptor.release {
+            if release.channel.as_deref().unwrap_or("stable") != "stable" {
+                continue;
+            }
+
+            let target = release.target.iter().find(|x| x.platform == platform);
+            if let Some(target) = target {
+                let url = target.payload.url();
+                return Ok(Response::new(Binary("".into()))
+                    .status(StatusCode::TEMPORARY_REDIRECT)
+                    .header("Location", url.as_str()));
+            }
+        }
+
+        Err(NotFoundError.into())
     }
 
     #[oai(
