@@ -762,7 +762,7 @@ struct GitRepo {
 
 impl GitRepo {
     fn new(path: PathBuf) -> Self {
-        let path = std::fs::canonicalize(path).unwrap();
+        let path = dunce::canonicalize(&path).expect(&format!("Git path does not exist: '{}'", path.display()));
         let head_ref = git_revparse_head(&path);
         Self { path, head_ref }
     }
@@ -844,7 +844,7 @@ impl GitRepo {
             .args(&["clone", "--depth", "1"])
             .arg(format!("file://{}", &self.path.display()))
             .arg(tmpdir.path())
-            .status()?;
+            .output()?;
 
         Ok(tmpdir)
     }
