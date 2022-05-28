@@ -257,8 +257,7 @@ impl Api {
     async fn workaround_download_pahkat(
         &self,
         git_repo_mutex: Data<&GitRepoMutex>,
-        #[allow(unused_variables)]
-        filename: Path<String>,
+        #[allow(unused_variables)] filename: Path<String>,
     ) -> Result<Response<Binary<String>>> {
         let platform = "windows";
 
@@ -299,8 +298,7 @@ impl Api {
     async fn workaround_download_divvun_manager(
         &self,
         git_repo_mutex: Data<&GitRepoMutex>,
-        #[allow(unused_variables)]
-        filename: Path<String>,
+        #[allow(unused_variables)] filename: Path<String>,
     ) -> Result<Response<Binary<String>>> {
         let platform = "windows";
 
@@ -481,8 +479,8 @@ impl Api {
 
         match repo_indexes.get(&repo_id.0) {
             Some(state) => {
-                let state = state.load();
-                Ok(Binary(state.1.clone()))
+                let (_, ref state) = state.load().1;
+                Ok(Binary(state.clone()))
             }
             None => Err(NotFoundError.into()),
         }

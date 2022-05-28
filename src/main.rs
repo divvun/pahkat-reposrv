@@ -174,7 +174,9 @@ fn generate_empty_index() -> Result<Vec<u8>, std::io::Error> {
     Ok(index.to_vec())
 }
 
-fn generate_repo_index(path: &path::Path) -> Result<Vec<u8>, std::io::Error> {
+fn generate_repo_index(
+    path: &path::Path,
+) -> Result<(Vec<pahkat_types::package::Package>, Vec<u8>), std::io::Error> {
     tracing::debug!("Attempting to load repo in path: {:?}", &path);
     let packages_path = path.join("packages");
     std::fs::create_dir_all(&packages_path)?;
@@ -220,7 +222,7 @@ fn generate_repo_index(path: &path::Path) -> Result<Vec<u8>, std::io::Error> {
     let index = indexing::build_index(&mut builder, &packages).map_err(|_| {
         std::io::Error::new(std::io::ErrorKind::Other, "failed to generate flatbuffer")
     })?;
-    Ok(index.to_vec())
+    Ok((packages, index.to_vec()))
 }
 
 #[derive(Debug, Clone, Object)]
@@ -275,7 +277,8 @@ async fn refresh_indexes_forever(
     }
 }
 
-type RepoIndexes = Arc<HashMap<String, ArcSwap<(String, Vec<u8>)>>>;
+type RepoIndexes =
+    Arc<HashMap<String, ArcSwap<(String, (Vec<pahkat_types::package::Package>, Vec<u8>))>>>;
 
 #[handler]
 async fn graphql_playground() -> impl IntoResponse {
@@ -298,7 +301,7 @@ async fn run(config: Config) -> Result<(), std::io::Error> {
             .map(|r| {
                 (
                     r.to_string(),
-                    ArcSwap::new(Arc::new(("".to_string(), vec![]))),
+                    ArcSwap::new(Arc::new(("".to_string(), (vec![], vec![])))),
                 )
             })
             .collect(),
@@ -314,6 +317,7 @@ async fn run(config: Config) -> Result<(), std::io::Error> {
 
     let schema = Schema::build(Query, EmptyMutation, EmptySubscription)
         .data(repo_indexes.clone())
+        .data(config.clone())
         .finish();
 
     let api_service = OpenApiService::new(
