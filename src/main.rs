@@ -1,5 +1,6 @@
 mod indexing;
 mod toml;
+mod graphql;
 
 use std::{
     borrow::Cow,
@@ -13,6 +14,8 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
+use async_graphql::{Schema, EmptyMutation, EmptySubscription, http::{GraphQLPlaygroundConfig, playground_source}};
+use async_graphql_poem::GraphQL;
 use chrono::{DateTime, Utc};
 use fbs::FlatBufferBuilder;
 use figment::{
@@ -31,8 +34,8 @@ use poem::{
     error::{BadRequest, Conflict, InternalServerError, NotFoundError},
     http::StatusCode,
     listener::TcpListener,
-    web::{headers::UserAgent, Data},
-    EndpointExt, Request, Result, Route,
+    web::{headers::UserAgent, Data, Html},
+    EndpointExt, Request, Result, Route, get, IntoResponse, handler,
 };
 use poem_openapi::{
     auth::Bearer,
@@ -44,6 +47,8 @@ use serde::{Deserialize, Serialize};
 use structopt::StructOpt;
 use tempfile::TempDir;
 use uuid::Uuid;
+
+use crate::graphql::Query;
 
 use self::toml::Toml;
 
@@ -348,16 +353,19 @@ struct ServerStatus {
     index_ref: BTreeMap<String, String>,
 }
 
+pub(crate) fn server_status(repo_indexes: &RepoIndexes) -> BTreeMap<String, String> {
+    repo_indexes
+        .iter()
+        .map(|(k, v)| (k.clone(), v.load().0.clone()))
+        .collect::<BTreeMap<_, _>>()
+}
+
 #[OpenApi]
 impl Api {
     /// Server status
     #[oai(path = "/status", method = "get")]
     async fn status(&self, repo_indexes: Data<&RepoIndexes>) -> Result<Json<ServerStatus>> {
-        let index_ref = repo_indexes
-            .0
-            .iter()
-            .map(|(k, v)| (k.clone(), v.load().0.clone()))
-            .collect::<BTreeMap<_, _>>();
+        let index_ref = server_status(repo_indexes.0);
         Ok(Json(ServerStatus { index_ref }))
     }
 
@@ -856,6 +864,11 @@ type RepoIndexes = Arc<HashMap<String, ArcSwap<(String, Vec<u8>)>>>;
 #[derive(Debug, Clone)]
 struct ServerToken(String);
 
+#[handler]
+async fn graphql_playground() -> impl IntoResponse {
+    Html(playground_source(GraphQLPlaygroundConfig::new("/graphql")))
+}
+
 async fn run(config: Config) -> Result<(), std::io::Error> {
     let git_repo_mutex: GitRepoMutex = Arc::new(RwLock::new(GitRepo::new(config.git_path.clone())));
 
@@ -886,6 +899,11 @@ async fn run(config: Config) -> Result<(), std::io::Error> {
         repo_indexes.clone(),
     ));
 
+    
+    let schema = Schema::build(Query, EmptyMutation, EmptySubscription)
+        .data(repo_indexes.clone())
+        .finish();
+
     let api_service =
         OpenApiService::new(Api, "Pahkat Repository Server", env!("CARGO_PKG_VERSION"))
             .server(&config.url);
@@ -893,6 +911,7 @@ async fn run(config: Config) -> Result<(), std::io::Error> {
     let app = Route::new()
         .nest("/", api_service)
         .nest("/playground", ui)
+        .at("/graphql", get(graphql_playground).post(GraphQL::new(schema)))
         .data(config.clone())
         .data(git_repo_mutex)
         .data(repo_indexes)
@@ -942,3 +961,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(run(config).await?)
 }
+

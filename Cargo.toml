@@ -28,6 +28,8 @@ tempfile = "3.3.0"
 figment = { version = "0.10.6", features = ["toml", "env"] }
 uuid = { version = "1.0.0", features = ["v4"] }
 dunce = "1.0.2"
+async-graphql = "4.0.1"
+async-graphql-poem = "4.0.1"
 
 [features]
 playground = []

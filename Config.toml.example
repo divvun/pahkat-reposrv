@@ -1,0 +1,6 @@
+api_token = "some UUID for mutations"
+git_path = "D:/repos"
+repos = []
+url = "localhost"
+port = 9000
+index_interval = 15
