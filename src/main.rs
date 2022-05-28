@@ -1,142 +1,44 @@
-mod indexing;
-mod toml;
+mod git;
 mod graphql;
+mod indexing;
+mod openapi;
+mod toml;
 
 use std::{
-    borrow::Cow,
     collections::{BTreeMap, HashMap},
-    fmt::Display,
     path::{self, PathBuf},
-    process::Command,
     str::FromStr,
     sync::Arc,
     time::Duration,
 };
 
 use arc_swap::ArcSwap;
-use async_graphql::{Schema, EmptyMutation, EmptySubscription, http::{GraphQLPlaygroundConfig, playground_source}};
+use async_graphql::{
+    http::{playground_source, GraphQLPlaygroundConfig},
+    EmptyMutation, EmptySubscription, Schema,
+};
 use async_graphql_poem::GraphQL;
-use chrono::{DateTime, Utc};
 use fbs::FlatBufferBuilder;
 use figment::{
     providers::{Env, Format, Toml as FigmentToml},
     Figment,
 };
 use once_cell::sync::Lazy;
-use pahkat_repomgr::package;
-use pahkat_types::{
-    package::{version::SemanticVersion, Descriptor, DescriptorData, Release, Version},
-    package_key::PackageKeyParams,
-    payload::Target,
-};
+use pahkat_types::package::{version::SemanticVersion, Version};
 use parking_lot::RwLock;
 use poem::{
-    error::{BadRequest, Conflict, InternalServerError, NotFoundError},
-    http::StatusCode,
-    listener::TcpListener,
-    web::{headers::UserAgent, Data, Html},
-    EndpointExt, Request, Result, Route, get, IntoResponse, handler,
+    get, handler, listener::TcpListener, web::Html, EndpointExt, IntoResponse, Result, Route,
 };
-use poem_openapi::{
-    auth::Bearer,
-    param::{Header, Path},
-    payload::{Binary, Json, Response},
-    Object, OpenApi, OpenApiService, SecurityScheme,
-};
+use poem_openapi::{Object, OpenApiService};
 use serde::{Deserialize, Serialize};
 use structopt::StructOpt;
-use tempfile::TempDir;
+
 use uuid::Uuid;
 
-use crate::graphql::Query;
-
-use self::toml::Toml;
-
-struct Api;
-
-#[derive(Object, Debug, Clone)]
-struct Error {
-    id: String,
-    message: String,
-}
-
-#[derive(Object, Debug, Clone)]
-struct UpdatePackageMetadataResponse {
-    repo_id: String,
-    package_id: String,
-    success: bool,
-    error: Option<Error>,
-    timestamp: DateTime<Utc>,
-}
-
-#[derive(Object, Debug, Clone)]
-pub struct UpdatePackageMetadataRequest {
-    pub version: String,
-    pub channel: Option<String>,
-    #[oai(default)]
-    pub authors: Vec<String>,
-    pub license: Option<String>,
-    pub license_url: Option<String>,
-    pub target: pahkat_types::payload::Target,
-}
-
-#[derive(Object, Debug, Clone)]
-pub struct CreatePackageMetadataRequest {
-    pub name: String,
-    pub description: String,
-    pub tags: Vec<String>,
-}
-
-#[derive(Object, Debug, Clone)]
-pub struct CreatePackageMetadataResponse {
-    repo_id: String,
-    package_id: String,
-    success: bool,
-    error: Option<Error>,
-    timestamp: DateTime<Utc>,
-}
-
-impl Display for UpdatePackageMetadataRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!(
-            "{} {} ({})",
-            self.version,
-            self.target.platform,
-            self.channel.as_deref().unwrap_or("stable")
-        ))
-    }
-}
-
-#[derive(SecurityScheme)]
-#[oai(type = "bearer", checker = "check_bearer_token")]
-struct BearerTokenAuth(());
-
-async fn check_bearer_token(req: &Request, bearer: Bearer) -> Option<()> {
-    let token = &req.data::<ServerToken>().expect("server token").0;
-
-    if &bearer.token == token {
-        Some(())
-    } else {
-        None
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-enum PackageUpdateError {
-    #[error("Invalid version provided")]
-    VersionError(#[from] pahkat_types::package::version::Error),
-
-    #[error("Repo error: {0}")]
-    RepoError(#[source] package::update::Error),
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("Missing query parameter for `platform`")]
-struct MissingQueryParamPlatformError;
-
-#[derive(Debug, thiserror::Error)]
-#[error("Package with identifier `{0}` already exists.")]
-struct PackageExistsError(String);
+use crate::{
+    git::{GitRepo, GitRepoMutex},
+    graphql::Query,
+};
 
 fn generate_010_workaround_index(
     config: &Config,
@@ -182,7 +84,8 @@ fn generate_010_workaround_index(
         }
     };
 
-    let mut pahkat_package: pahkat_types::package::Descriptor = match ::toml::from_str(&pahkat_file) {
+    let mut pahkat_package: pahkat_types::package::Descriptor = match ::toml::from_str(&pahkat_file)
+    {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("Could not parse: {:?}", &pahkat_path);
@@ -229,7 +132,7 @@ fn generate_010_workaround_index(
     let mut dm_target = windows_divvun_inst.target[dm_index].clone();
     let mut pahkat_target = pahkat_inst.target[pahkat_index].clone();
 
-    static NONCE: Lazy<String> = Lazy::new(|| Uuid::new_v4().to_string() );
+    static NONCE: Lazy<String> = Lazy::new(|| Uuid::new_v4().to_string());
     dm_target.payload.set_url(
         format!(
             "{}/1AAB4845-32A9-41A8-BBDE-120847548A81/divvun-installer-{}.exe",
@@ -320,34 +223,6 @@ fn generate_repo_index(path: &path::Path) -> Result<Vec<u8>, std::io::Error> {
     Ok(index.to_vec())
 }
 
-fn modify_repo_metadata(
-    path: &path::Path,
-    package_id: &str,
-    release: &UpdatePackageMetadataRequest,
-) -> Result<(), PackageUpdateError> {
-    let version: pahkat_types::package::Version = match release.version.parse() {
-        Ok(v) => v,
-        Err(e) => return Err(PackageUpdateError::VersionError(e)),
-    };
-
-    let inner_req = package::update::Request::builder()
-        .repo_path(path.clone().into())
-        .id(package_id.clone().into())
-        .version(Cow::Owned(version))
-        .channel(release.channel.as_ref().map(|x| Cow::Borrowed(&**x)))
-        .target(Cow::Borrowed(&release.target))
-        .url(None)
-        .build();
-
-    tracing::info!("Updating package...");
-    match package::update::update(inner_req) {
-        Ok(_) => {}
-        Err(e) => return Err(PackageUpdateError::RepoError(e)),
-    };
-
-    Ok(())
-}
-
 #[derive(Debug, Clone, Object)]
 struct ServerStatus {
     index_ref: BTreeMap<String, String>,
@@ -358,357 +233,6 @@ pub(crate) fn server_status(repo_indexes: &RepoIndexes) -> BTreeMap<String, Stri
         .iter()
         .map(|(k, v)| (k.clone(), v.load().0.clone()))
         .collect::<BTreeMap<_, _>>()
-}
-
-#[OpenApi]
-impl Api {
-    /// Server status
-    #[oai(path = "/status", method = "get")]
-    async fn status(&self, repo_indexes: Data<&RepoIndexes>) -> Result<Json<ServerStatus>> {
-        let index_ref = server_status(repo_indexes.0);
-        Ok(Json(ServerStatus { index_ref }))
-    }
-
-    /// Create package metadata
-    #[oai(path = "/:repo_id/packages/:package_id", method = "post")]
-    async fn create_package_metadata(
-        &self,
-        _auth: BearerTokenAuth,
-        git_repo_mutex: Data<&GitRepoMutex>,
-        config: Data<&Config>,
-        repo_id: Path<String>,
-        package_id: Path<String>,
-        data: Json<CreatePackageMetadataRequest>,
-    ) -> Result<Json<CreatePackageMetadataResponse>> {
-        if !config.repos.contains(&repo_id) {
-            return Err(NotFoundError.into());
-        }
-
-        let mut guard = git_repo_mutex.write();
-
-        if guard
-            .path
-            .join(&repo_id.0)
-            .join("packages")
-            .join(&package_id.0)
-            .join("index.toml")
-            .exists()
-        {
-            return Err(Conflict(PackageExistsError(package_id.0.clone())));
-        }
-
-        guard.cleanup(&config).map_err(|e| InternalServerError(e))?;
-
-        package::init::init(
-            package::init::Request::builder()
-                .repo_path(guard.path.join(&repo_id.0).into())
-                .id(Cow::Borrowed(&package_id.0))
-                .name(Cow::Borrowed(&data.0.name))
-                .description(Cow::Borrowed(&data.0.description))
-                .tags(Cow::Borrowed(&data.0.tags))
-                .build(),
-        )
-        .map_err(BadRequest)?;
-
-        guard
-            .add_package_to_index_tree(&repo_id.0, &package_id.0)
-            .map_err(|e| InternalServerError(e))?;
-        guard
-            .commit_create(&repo_id.0, &package_id.0)
-            .map_err(|e| InternalServerError(e))?;
-        guard.push(&config).map_err(|e| InternalServerError(e))?;
-
-        Ok(Json(CreatePackageMetadataResponse {
-            repo_id: repo_id.0,
-            package_id: package_id.0,
-            success: true,
-            error: None,
-            timestamp: Utc::now(),
-        }))
-    }
-
-    /// Update package metadata
-    #[oai(path = "/:repo_id/packages/:package_id", method = "patch")]
-    async fn update_package_metadata(
-        &self,
-        _auth: BearerTokenAuth,
-        git_repo_mutex: Data<&GitRepoMutex>,
-        config: Data<&Config>,
-        repo_id: Path<String>,
-        package_id: Path<String>,
-        data: Json<UpdatePackageMetadataRequest>,
-    ) -> Result<Json<UpdatePackageMetadataResponse>> {
-        if !config.repos.contains(&repo_id) {
-            return Err(NotFoundError.into());
-        }
-
-        let mut guard = git_repo_mutex.write();
-        let repo_path = guard.path.join(&repo_id.0);
-
-        if !repo_path
-            .join("packages")
-            .join(&package_id.0)
-            .join("index.toml")
-            .exists()
-        {
-            return Err(NotFoundError.into());
-        }
-
-        guard.cleanup(&config).map_err(|e| InternalServerError(e))?;
-        modify_repo_metadata(&repo_path, &package_id.0, &data.0)
-            .map_err(|e| InternalServerError(e))?;
-        guard
-            .add_package_to_index_tree(&repo_id.0, &package_id.0)
-            .map_err(|e| InternalServerError(e))?;
-        guard
-            .commit_update(&repo_id.0, &package_id.0, &data.0)
-            .map_err(|e| InternalServerError(e))?;
-        guard.push(&config).map_err(|e| InternalServerError(e))?;
-
-        Ok(Json(UpdatePackageMetadataResponse {
-            repo_id: repo_id.0.to_string(),
-            package_id: package_id.0.to_string(),
-            success: true,
-            error: None,
-            timestamp: Utc::now(),
-        }))
-    }
-
-    #[oai(
-        path = "/1AAB4845-32A9-41A8-BBDE-120847548A82/:filename",
-        method = "get"
-    )]
-    async fn workaround_download_pahkat(
-        &self,
-        git_repo_mutex: Data<&GitRepoMutex>,
-        filename: Path<String>,
-    ) -> Result<Response<Binary<String>>> {
-        let platform = "windows";
-
-        let guard = git_repo_mutex.read();
-
-        let index = std::fs::read_to_string(
-            guard
-                .path
-                .join("divvun-installer")
-                .join("packages")
-                .join("pahkat-service")
-                .join("index.toml"),
-        )
-        .map_err(InternalServerError)?;
-        let descriptor: Descriptor = ::toml::from_str(&index).map_err(InternalServerError)?;
-
-        for release in descriptor.release {
-            if release.channel.as_deref().unwrap_or("stable") != "stable" {
-                continue;
-            }
-
-            let target = release.target.iter().find(|x| x.platform == platform);
-            if let Some(target) = target {
-                let url = target.payload.url();
-                return Ok(Response::new(Binary("".into()))
-                    .status(StatusCode::TEMPORARY_REDIRECT)
-                    .header("Location", url.as_str()));
-            }
-        }
-
-        Err(NotFoundError.into())
-    }
-
-    #[oai(
-        path = "/1AAB4845-32A9-41A8-BBDE-120847548A81/:filename",
-        method = "get"
-    )]
-    async fn workaround_download_divvun_manager(
-        &self,
-        git_repo_mutex: Data<&GitRepoMutex>,
-        filename: Path<String>,
-    ) -> Result<Response<Binary<String>>> {
-        let platform = "windows";
-
-        let guard = git_repo_mutex.read();
-
-        let index = std::fs::read_to_string(
-            guard
-                .path
-                .join("divvun-installer")
-                .join("packages")
-                .join("divvun-installer")
-                .join("index.toml"),
-        )
-        .map_err(InternalServerError)?;
-        let descriptor: Descriptor = ::toml::from_str(&index).map_err(InternalServerError)?;
-
-        for release in descriptor.release {
-            if release.channel.as_deref().unwrap_or("stable") != "stable" {
-                continue;
-            }
-
-            let target = release.target.iter().find(|x| x.platform == platform);
-            if let Some(target) = target {
-                let url = target.payload.url();
-                return Ok(Response::new(Binary("".into()))
-                    .status(StatusCode::TEMPORARY_REDIRECT)
-                    .header("Location", url.as_str()));
-            }
-        }
-
-        Err(NotFoundError.into())
-    }
-
-    /// Download package
-    #[oai(path = "/:repo_id/download/:package_id", method = "get")]
-    async fn download(
-        &self,
-        git_repo_mutex: Data<&GitRepoMutex>,
-        config: Data<&Config>,
-        repo_id: Path<String>,
-        package_id: Path<String>,
-        params: poem::web::Query<PackageKeyParams>,
-    ) -> Result<Response<Binary<String>>> {
-        if !config.repos.contains(&repo_id) {
-            return Err(NotFoundError.into());
-        }
-
-        let platform = match params.0.platform {
-            Some(v) => v,
-            None => {
-                return Err(BadRequest(MissingQueryParamPlatformError));
-            }
-        };
-
-        let guard = git_repo_mutex.read();
-
-        let index = std::fs::read_to_string(
-            guard
-                .path
-                .join(&repo_id.0)
-                .join("packages")
-                .join(&package_id.0)
-                .join("index.toml"),
-        )
-        .map_err(InternalServerError)?;
-        let descriptor: Descriptor = ::toml::from_str(&index).map_err(InternalServerError)?;
-
-        for release in descriptor.release {
-            if release.channel.as_deref().unwrap_or("stable")
-                != params.0.channel.as_deref().unwrap_or("stable")
-            {
-                continue;
-            }
-
-            let target = release.target.iter().find(|x| x.platform == platform);
-            if let Some(target) = target {
-                let url = target.payload.url();
-                return Ok(Response::new(Binary("".into()))
-                    .status(StatusCode::TEMPORARY_REDIRECT)
-                    .header("Location", url.as_str()));
-            }
-        }
-
-        Err(NotFoundError.into())
-    }
-
-    /// Get package descriptor
-    #[oai(path = "/:repo_id/packages/:package_id/index.toml", method = "get")]
-    async fn package_descriptor(
-        &self,
-        config: Data<&Config>,
-        repo_id: Path<String>,
-        package_id: Path<String>,
-    ) -> Result<Toml<String>> {
-        let path = config
-            .git_path
-            .join(&repo_id.0)
-            .join("packages")
-            .join(package_id.0)
-            .join("index.toml");
-
-        let output = std::fs::read_to_string(path).map_err(|_| poem::Error::from(NotFoundError))?;
-
-        Ok(Toml(output))
-    }
-
-    /// Get i18n strings
-    ///
-    /// {lang} must end in `.toml`.
-    #[oai(path = "/:repo_id/strings/:lang", method = "get")]
-    async fn strings(
-        &self,
-        config: Data<&Config>,
-        repo_id: Path<String>,
-        lang: Path<String>,
-    ) -> Result<Toml<String>> {
-        let lang = lang
-            .0
-            .strip_suffix(".toml")
-            .ok_or_else(|| poem::Error::from(NotFoundError))?;
-
-        let lang = if lang.is_empty() { "en" } else { lang };
-
-        let lang_path = config
-            .git_path
-            .join(&repo_id.0)
-            .join("strings")
-            .join(lang)
-            .with_extension("toml");
-
-        tracing::debug!("Strings path: {:?}", &lang_path);
-
-        let output =
-            std::fs::read_to_string(lang_path).map_err(|_| poem::Error::from(NotFoundError))?;
-
-        Ok(Toml(output))
-    }
-
-    /// Get repository toml index
-    #[oai(path = "/:repo_id/index.toml", method = "get")]
-    async fn repository_index_toml(
-        &self,
-        config: Data<&Config>,
-        repo_id: Path<String>,
-    ) -> Result<Toml<String>> {
-        let index_path = config.git_path.join(&repo_id.0).join("index.toml");
-
-        let output =
-            std::fs::read_to_string(index_path).map_err(|_| poem::Error::from(NotFoundError))?;
-
-        Ok(Toml(output))
-    }
-
-    /// Get repository binary index
-    #[oai(path = "/:repo_id/packages/index.bin", method = "get")]
-    async fn repository_index_bin(
-        &self,
-        config: Data<&Config>,
-        repo_indexes: Data<&RepoIndexes>,
-        repo_id: Path<String>,
-        #[oai(name = "User-Agent")] user_agent: Header<Option<String>>,
-    ) -> Result<Binary<Vec<u8>>> {
-        let user_agent = user_agent.0.unwrap_or_else(|| "".to_string());
-
-        if user_agent == "pahkat-client/0.1.0" {
-            tracing::debug!("Detected old pahkat, serving workaround index");
-            if repo_id.0 == "divvun-installer" {
-                let index = generate_010_workaround_index(
-                    &config.0,
-                    &config.git_path.join("divvun-installer"),
-                )
-                .unwrap();
-                return Ok(Binary(index));
-            } else {
-                return Ok(Binary(generate_empty_index().unwrap()));
-            }
-        }
-
-        match repo_indexes.get(&repo_id.0) {
-            Some(state) => {
-                let state = state.load();
-                Ok(Binary(state.1.clone()))
-            }
-            None => Err(NotFoundError.into()),
-        }
-    }
 }
 
 async fn refresh_indexes(
@@ -751,118 +275,7 @@ async fn refresh_indexes_forever(
     }
 }
 
-fn git_revparse_head(path: &path::Path) -> String {
-    let output = Command::new("git")
-        .args(&["rev-parse", "HEAD"])
-        .current_dir(path)
-        .output()
-        .unwrap();
-    std::str::from_utf8(&output.stdout)
-        .unwrap()
-        .trim()
-        .to_string()
-}
-
-struct GitRepo {
-    path: PathBuf,
-    head_ref: String,
-}
-
-impl GitRepo {
-    fn new(path: PathBuf) -> Self {
-        let path = dunce::canonicalize(&path).expect(&format!("Git path does not exist: '{}'", path.display()));
-        let head_ref = git_revparse_head(&path);
-        Self { path, head_ref }
-    }
-
-    fn add_package_to_index_tree(
-        &mut self,
-        repo_id: &str,
-        package_id: &str,
-    ) -> Result<(), std::io::Error> {
-        Command::new("git")
-            .arg("add")
-            .arg(format!("{}/packages/{}", repo_id, package_id))
-            .current_dir(&self.path)
-            .status()?;
-
-        Ok(())
-    }
-
-    fn commit_create(&mut self, repo_id: &str, package_id: &str) -> Result<(), std::io::Error> {
-        Command::new("git")
-            .args(&["commit", "-m"])
-            .arg(format!("[{}:create] `{}`", repo_id, package_id))
-            .current_dir(&self.path)
-            .status()?;
-
-        self.head_ref = git_revparse_head(&self.path);
-
-        Ok(())
-    }
-
-    fn commit_update(
-        &mut self,
-        repo_id: &str,
-        package_id: &str,
-        release: &UpdatePackageMetadataRequest,
-    ) -> Result<(), std::io::Error> {
-        Command::new("git")
-            .args(&["commit", "-m"])
-            .arg(format!("[{}:update] `{} {}`", repo_id, package_id, release))
-            .current_dir(&self.path)
-            .status()?;
-
-        self.head_ref = git_revparse_head(&self.path);
-
-        Ok(())
-    }
-
-    fn push(&self, config: &Config) -> Result<(), std::io::Error> {
-        Command::new("git")
-            .args(&["push", "origin", &format!("HEAD:{}", &config.branch_name)])
-            .current_dir(&self.path)
-            .status()?;
-        Ok(())
-    }
-
-    fn cleanup(&self, config: &Config) -> Result<(), std::io::Error> {
-        Command::new("git")
-            .args(&["clean", "-dfx"])
-            .current_dir(&self.path)
-            .status()?;
-
-        Command::new("git")
-            .args(&["fetch", "origin", &config.branch_name])
-            .current_dir(&self.path)
-            .status()?;
-
-        Command::new("git")
-            .args(&["reset", "--hard", &format!("origin/{}", config.branch_name)])
-            .current_dir(&self.path)
-            .status()?;
-
-        Ok(())
-    }
-
-    fn shallow_clone_to_tempdir(&self) -> Result<TempDir, std::io::Error> {
-        let tmpdir = tempfile::tempdir()?;
-
-        Command::new("git")
-            .args(&["clone", "--depth", "1"])
-            .arg(format!("file://{}", &self.path.display()))
-            .arg(tmpdir.path())
-            .output()?;
-
-        Ok(tmpdir)
-    }
-}
-
-type GitRepoMutex = Arc<RwLock<GitRepo>>;
 type RepoIndexes = Arc<HashMap<String, ArcSwap<(String, Vec<u8>)>>>;
-
-#[derive(Debug, Clone)]
-struct ServerToken(String);
 
 #[handler]
 async fn graphql_playground() -> impl IntoResponse {
@@ -899,23 +312,28 @@ async fn run(config: Config) -> Result<(), std::io::Error> {
         repo_indexes.clone(),
     ));
 
-    
     let schema = Schema::build(Query, EmptyMutation, EmptySubscription)
         .data(repo_indexes.clone())
         .finish();
 
-    let api_service =
-        OpenApiService::new(Api, "Pahkat Repository Server", env!("CARGO_PKG_VERSION"))
-            .server(&config.url);
+    let api_service = OpenApiService::new(
+        openapi::Api,
+        "Pahkat Repository Server",
+        env!("CARGO_PKG_VERSION"),
+    )
+    .server(&config.url);
     let ui = api_service.rapidoc();
     let app = Route::new()
         .nest("/", api_service)
         .nest("/playground", ui)
-        .at("/graphql", get(graphql_playground).post(GraphQL::new(schema)))
+        .at(
+            "/graphql",
+            get(graphql_playground).post(GraphQL::new(schema)),
+        )
         .data(config.clone())
         .data(git_repo_mutex)
         .data(repo_indexes)
-        .data(ServerToken(config.api_token.clone()));
+        .data(openapi::ServerToken(config.api_token.clone()));
 
     poem::Server::new(TcpListener::bind((config.host, config.port)))
         .run(app)
@@ -961,4 +379,3 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(run(config).await?)
 }
-
