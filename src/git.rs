@@ -1,10 +1,8 @@
 use std::{
     path::{self, PathBuf},
     process::Command,
-    sync::Arc,
 };
 
-use parking_lot::RwLock;
 use tempfile::TempDir;
 
 use crate::{openapi::UpdatePackageMetadataRequest, Config};
@@ -21,6 +19,7 @@ fn git_revparse_head(path: &path::Path) -> String {
         .to_string()
 }
 
+#[derive(Debug)]
 pub struct GitRepo {
     pub(crate) path: PathBuf,
     pub(crate) head_ref: String,
@@ -116,5 +115,3 @@ impl GitRepo {
         Ok(tmpdir)
     }
 }
-
-pub type GitRepoMutex = Arc<RwLock<GitRepo>>;

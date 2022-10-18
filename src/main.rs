@@ -2,10 +2,11 @@ mod git;
 mod graphql;
 mod indexing;
 mod openapi;
+mod state;
 mod toml;
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     path::{self, PathBuf},
     str::FromStr,
     sync::Arc,
@@ -29,15 +30,17 @@ use parking_lot::RwLock;
 use poem::{
     get, handler, listener::TcpListener, web::Html, EndpointExt, IntoResponse, Result, Route,
 };
-use poem_openapi::{Object, OpenApiService};
+use poem_openapi::OpenApiService;
 use serde::{Deserialize, Serialize};
+use state::GIT_REPO;
 use structopt::StructOpt;
 
 use uuid::Uuid;
 
 use crate::{
-    git::{GitRepo, GitRepoMutex},
+    git::GitRepo,
     graphql::Query,
+    state::{init_repo_indexes, set_repo_indexes, REPO_INDEXES},
 };
 
 fn generate_010_workaround_index(
@@ -175,9 +178,16 @@ fn generate_empty_index() -> Result<Vec<u8>, std::io::Error> {
 }
 
 fn generate_repo_index(
+    head_ref: Arc<str>,
     path: &path::Path,
-) -> Result<(Vec<pahkat_types::package::Package>, Vec<u8>), std::io::Error> {
+) -> Result<RepoIndexData, std::io::Error> {
     tracing::debug!("Attempting to load repo in path: {:?}", &path);
+
+    let index_path = path.join("index.toml");
+    let repo_index = std::fs::read_to_string(index_path).unwrap();
+    let repo_index = ::toml::from_str(&repo_index)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
     let packages_path = path.join("packages");
     std::fs::create_dir_all(&packages_path)?;
 
@@ -222,37 +232,33 @@ fn generate_repo_index(
     let index = indexing::build_index(&mut builder, &packages).map_err(|_| {
         std::io::Error::new(std::io::ErrorKind::Other, "failed to generate flatbuffer")
     })?;
-    Ok((packages, index.to_vec()))
-}
 
-#[derive(Debug, Clone, Object)]
-struct ServerStatus {
-    index_ref: BTreeMap<String, String>,
-}
-
-pub(crate) fn server_status(repo_indexes: &RepoIndexes) -> BTreeMap<String, String> {
-    repo_indexes
-        .iter()
-        .map(|(k, v)| (k.clone(), v.load().0.clone()))
-        .collect::<BTreeMap<_, _>>()
+    Ok(RepoIndexData {
+        head_ref,
+        packages: Arc::from(packages),
+        repo_index: Arc::new(repo_index),
+        package_index: Arc::from(index.to_vec()),
+    })
 }
 
 async fn refresh_indexes(
-    git_repo_mutex: GitRepoMutex,
-    repo_indexes: RepoIndexes,
+    git_repo_mutex: &RwLock<GitRepo>,
+    repo_indexes: &RepoIndexes,
 ) -> Result<(), std::io::Error> {
     let (tmpdir, head_ref) = {
         let guard = git_repo_mutex.read();
         (guard.shallow_clone_to_tempdir()?, guard.head_ref.clone())
     };
+    let head_ref = Arc::from(head_ref);
 
     for (repo_id, state) in repo_indexes.iter() {
         tracing::debug!("Index check for: {}", repo_id);
         let s = state.load();
-        if s.0 != head_ref {
+        if s.head_ref != head_ref {
             tracing::info!("Updating index for {}", repo_id);
-            let fbs_data = generate_repo_index(&tmpdir.path().join(repo_id)).unwrap();
-            state.swap(Arc::new((head_ref.clone(), fbs_data)));
+            let repo_index_data =
+                generate_repo_index(head_ref.clone(), &tmpdir.path().join(repo_id)).unwrap();
+            set_repo_indexes(state, repo_index_data);
             tracing::info!("Finished updating index for {}", repo_id);
         }
     }
@@ -262,13 +268,13 @@ async fn refresh_indexes(
 
 async fn refresh_indexes_forever(
     config: Config,
-    git_repo_mutex: GitRepoMutex,
-    repo_indexes: RepoIndexes,
+    git_repo_mutex: &RwLock<GitRepo>,
+    repo_indexes: &RepoIndexes,
 ) {
     loop {
         tracing::debug!("Sleeping for {} seconds", config.index_interval);
         tokio::time::sleep(Duration::from_secs(config.index_interval)).await;
-        match refresh_indexes(git_repo_mutex.clone(), repo_indexes.clone()).await {
+        match refresh_indexes(git_repo_mutex, repo_indexes).await {
             Ok(_) => {}
             Err(e) => {
                 tracing::error!(error = ?e, "Error while refreshing indexes");
@@ -277,8 +283,16 @@ async fn refresh_indexes_forever(
     }
 }
 
-type RepoIndexes =
-    Arc<HashMap<String, ArcSwap<(String, (Vec<pahkat_types::package::Package>, Vec<u8>))>>>;
+#[derive(Debug)]
+struct RepoIndexData {
+    head_ref: Arc<str>,
+    packages: Arc<[pahkat_types::package::Package]>,
+    repo_index: Arc<pahkat_types::repo::Index>,
+    package_index: Arc<[u8]>,
+}
+
+type RepoIndex = ArcSwap<RepoIndexData>;
+type RepoIndexes = Arc<HashMap<String, RepoIndex>>;
 
 #[handler]
 async fn graphql_playground() -> impl IntoResponse {
@@ -286,37 +300,17 @@ async fn graphql_playground() -> impl IntoResponse {
 }
 
 async fn run(config: Config) -> Result<(), std::io::Error> {
-    let git_repo_mutex: GitRepoMutex = Arc::new(RwLock::new(GitRepo::new(config.git_path.clone())));
+    init_repo_indexes(&config)?;
 
-    tracing::info!("Cleaning up repo state...");
-    {
-        let guard = git_repo_mutex.write();
-        guard.cleanup(&config)?;
-    }
-
-    let repo_indexes: RepoIndexes = Arc::new(
-        config
-            .repos
-            .iter()
-            .map(|r| {
-                (
-                    r.to_string(),
-                    ArcSwap::new(Arc::new(("".to_string(), (vec![], vec![])))),
-                )
-            })
-            .collect(),
-    );
-
-    refresh_indexes(git_repo_mutex.clone(), repo_indexes.clone()).await?;
+    // refresh_indexes(GIT_REPO.get().unwrap(), REPO_INDEXES.get().unwrap()).await?;
 
     tokio::spawn(refresh_indexes_forever(
         config.clone(),
-        git_repo_mutex.clone(),
-        repo_indexes.clone(),
+        GIT_REPO.get().unwrap(),
+        REPO_INDEXES.get().unwrap(),
     ));
 
     let schema = Schema::build(Query, EmptyMutation, EmptySubscription)
-        .data(repo_indexes.clone())
         .data(config.clone())
         .finish();
 
@@ -335,8 +329,6 @@ async fn run(config: Config) -> Result<(), std::io::Error> {
             get(graphql_playground).post(GraphQL::new(schema)),
         )
         .data(config.clone())
-        .data(git_repo_mutex)
-        .data(repo_indexes)
         .data(openapi::ServerToken(config.api_token.clone()));
 
     poem::Server::new(TcpListener::bind((config.host, config.port)))
@@ -370,6 +362,10 @@ pub struct Config {
     /// Branch name (default: main)
     #[serde(default = "default_branch_name")]
     branch_name: String,
+
+    /// Skip git repo clean-up (useful for development)
+    #[serde(default)]
+    skip_repo_cleanup: bool,
 }
 
 fn default_branch_name() -> String {

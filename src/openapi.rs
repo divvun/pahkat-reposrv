@@ -1,8 +1,11 @@
 use crate::{
-    generate_010_workaround_index, generate_empty_index, git::GitRepoMutex, server_status,
-    toml::Toml, Config, RepoIndexes, ServerStatus,
+    generate_010_workaround_index, generate_empty_index,
+    state::{ServerStatus, GIT_REPO, REPO_INDEXES, SERVER_STATUS},
+    toml::Toml,
+    Config,
 };
 use chrono::{DateTime, Utc};
+use once_cell::sync::{Lazy, OnceCell};
 use pahkat_repomgr::package;
 use pahkat_types::{package::Descriptor, package_key::PackageKeyParams};
 use poem::{
@@ -17,7 +20,9 @@ use poem_openapi::{
     payload::{Binary, Json, Response},
     Object, OpenApi, SecurityScheme,
 };
-use std::{borrow::Cow, fmt::Display, path};
+use std::{borrow::Cow, fmt::Display, path, sync::Arc};
+
+static DIVVUN_INST_REPO_INDEX: OnceCell<Arc<[u8]>> = OnceCell::new();
 
 pub struct Api;
 
@@ -140,9 +145,9 @@ fn modify_repo_metadata(
 impl Api {
     /// Server status
     #[oai(path = "/status", method = "get")]
-    async fn status(&self, repo_indexes: Data<&RepoIndexes>) -> Result<Json<ServerStatus>> {
-        let index_ref = server_status(repo_indexes.0);
-        Ok(Json(ServerStatus { index_ref }))
+    async fn status(&self) -> Result<Json<ServerStatus>> {
+        let status = SERVER_STATUS.load();
+        Ok(Json(status.as_ref().clone()))
     }
 
     /// Create package metadata
@@ -150,7 +155,6 @@ impl Api {
     async fn create_package_metadata(
         &self,
         _auth: BearerTokenAuth,
-        git_repo_mutex: Data<&GitRepoMutex>,
         config: Data<&Config>,
         repo_id: Path<String>,
         package_id: Path<String>,
@@ -160,7 +164,7 @@ impl Api {
             return Err(NotFoundError.into());
         }
 
-        let mut guard = git_repo_mutex.write();
+        let mut guard = GIT_REPO.get().unwrap().write();
 
         if guard
             .path
@@ -208,7 +212,6 @@ impl Api {
     async fn update_package_metadata(
         &self,
         _auth: BearerTokenAuth,
-        git_repo_mutex: Data<&GitRepoMutex>,
         config: Data<&Config>,
         repo_id: Path<String>,
         package_id: Path<String>,
@@ -218,7 +221,7 @@ impl Api {
             return Err(NotFoundError.into());
         }
 
-        let mut guard = git_repo_mutex.write();
+        let mut guard = GIT_REPO.get().unwrap().write();
         let repo_path = guard.path.join(&repo_id.0);
 
         if !repo_path
@@ -256,12 +259,11 @@ impl Api {
     )]
     async fn workaround_download_pahkat(
         &self,
-        git_repo_mutex: Data<&GitRepoMutex>,
         #[allow(unused_variables)] filename: Path<String>,
     ) -> Result<Response<Binary<String>>> {
         let platform = "windows";
 
-        let guard = git_repo_mutex.read();
+        let guard = GIT_REPO.get().unwrap().read();
 
         let index = std::fs::read_to_string(
             guard
@@ -297,12 +299,11 @@ impl Api {
     )]
     async fn workaround_download_divvun_manager(
         &self,
-        git_repo_mutex: Data<&GitRepoMutex>,
         #[allow(unused_variables)] filename: Path<String>,
     ) -> Result<Response<Binary<String>>> {
         let platform = "windows";
 
-        let guard = git_repo_mutex.read();
+        let guard = GIT_REPO.get().unwrap().read();
 
         let index = std::fs::read_to_string(
             guard
@@ -336,7 +337,6 @@ impl Api {
     #[oai(path = "/:repo_id/download/:package_id", method = "get")]
     async fn download(
         &self,
-        git_repo_mutex: Data<&GitRepoMutex>,
         config: Data<&Config>,
         repo_id: Path<String>,
         package_id: Path<String>,
@@ -353,7 +353,7 @@ impl Api {
             }
         };
 
-        let guard = git_repo_mutex.read();
+        let guard = GIT_REPO.get().unwrap().read();
 
         let index = std::fs::read_to_string(
             guard
@@ -457,7 +457,6 @@ impl Api {
     async fn repository_index_bin(
         &self,
         config: Data<&Config>,
-        repo_indexes: Data<&RepoIndexes>,
         repo_id: Path<String>,
         #[oai(name = "User-Agent")] user_agent: Header<Option<String>>,
     ) -> Result<Binary<Vec<u8>>> {
@@ -466,21 +465,27 @@ impl Api {
         if user_agent == "pahkat-client/0.1.0" {
             tracing::debug!("Detected old pahkat, serving workaround index");
             if repo_id.0 == "divvun-installer" {
-                let index = generate_010_workaround_index(
-                    &config.0,
-                    &config.git_path.join("divvun-installer"),
-                )
-                .unwrap();
-                return Ok(Binary(index));
+                let index = DIVVUN_INST_REPO_INDEX.get_or_init(|| {
+                    Arc::from(
+                        generate_010_workaround_index(
+                            &config.0,
+                            &config.git_path.join("divvun-installer"),
+                        )
+                        .unwrap(),
+                    )
+                });
+                return Ok(Binary(index.to_vec()));
             } else {
-                return Ok(Binary(generate_empty_index().unwrap()));
+                static EMPTY_REPO_INDEX: Lazy<Arc<[u8]>> =
+                    Lazy::new(|| Arc::from(generate_empty_index().unwrap()));
+                return Ok(Binary(EMPTY_REPO_INDEX.to_vec()));
             }
         }
 
-        match repo_indexes.get(&repo_id.0) {
+        match REPO_INDEXES.get().unwrap().get(&repo_id.0) {
             Some(state) => {
-                let (_, ref state) = state.load().1;
-                Ok(Binary(state.clone()))
+                let index = &state.load().package_index;
+                Ok(Binary(index.to_vec()))
             }
             None => Err(NotFoundError.into()),
         }

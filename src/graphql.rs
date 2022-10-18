@@ -1,52 +1,45 @@
-use std::collections::BTreeMap;
+use std::sync::Arc;
 
-use async_graphql::{Context, Object, SimpleObject};
+use async_graphql::Object;
 
-use crate::{Config, RepoIndexes};
+use crate::state::{ServerStatus, REPO_INDEXES, SERVER_STATUS};
 
 pub struct Query;
 
-#[derive(Debug, Clone, SimpleObject)]
-struct ServerStatus {
-    index_ref: BTreeMap<String, String>,
-}
-
 #[Object]
 impl Query {
-    async fn status(&self, ctx: &Context<'_>) -> ServerStatus {
-        let repo_indexes = ctx.data_unchecked::<RepoIndexes>();
-        ServerStatus {
-            index_ref: crate::server_status(&repo_indexes),
-        }
+    async fn status(&self) -> Arc<ServerStatus> {
+        SERVER_STATUS.load_full()
     }
 
-    async fn repos(&self, ctx: &Context<'_>) -> Vec<Repo> {
-        let repo_indexes = ctx.data_unchecked::<RepoIndexes>();
-        repo_indexes
+    async fn repos<'a>(&self) -> Vec<Repo<'a>> {
+        REPO_INDEXES
+            .get()
+            .unwrap()
             .keys()
-            .map(|x| Repo { key: x.to_string() })
+            .map(|key| Repo { key })
             .collect()
     }
 }
 
-struct Repo {
-    key: String,
+struct Repo<'a> {
+    key: &'a str,
 }
 
 #[Object]
-impl Repo {
+impl Repo<'_> {
     #[graphql(flatten)]
-    async fn _index(&self, ctx: &Context<'_>) -> pahkat_types::repo::Index {
-        let config = ctx.data_unchecked::<Config>();
-        let index_path = config.git_path.join(&self.key).join("index.toml");
-
-        let output = std::fs::read_to_string(index_path).unwrap();
-        ::toml::from_str(&output).unwrap()
+    async fn _index(&self) -> Arc<pahkat_types::repo::Index> {
+        let repo_indexes = REPO_INDEXES.get().unwrap();
+        let value = repo_indexes.get(self.key).unwrap();
+        let index_data = value.load();
+        index_data.repo_index.clone()
     }
 
-    async fn packages(&self, ctx: &Context<'_>) -> Vec<pahkat_types::package::Package> {
-        let repo_indexes = ctx.data_unchecked::<RepoIndexes>();
-        let (ref packages, _) = repo_indexes[&self.key].load().1;
-        packages.iter().cloned().collect()
+    async fn packages(&self) -> Arc<[pahkat_types::package::Package]> {
+        let repo_indexes = REPO_INDEXES.get().unwrap();
+        let value = repo_indexes.get(self.key).unwrap();
+        let index_data = value.load();
+        index_data.packages.clone()
     }
 }
