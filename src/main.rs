@@ -346,13 +346,28 @@ async fn run(config: Config) -> Result<(), std::io::Error> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    /// API token used by GraphQL API for mutations
     api_token: String,
+
+    /// Local path to Pahkat git repos to host
     git_path: PathBuf,
+
+    /// The names of the repositories to host
     repos: Vec<String>,
+
+    /// The host URL prefix for this server
     url: String,
+
+    /// IP/hostname (may be different to URL)
     host: String,
+
+    /// Port
     port: u16,
+
+    /// How often to re-index the git repositories
     index_interval: u64,
+
+    /// Branch name (default: main)
     #[serde(default = "default_branch_name")]
     branch_name: String,
 }
@@ -368,7 +383,7 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     tracing::info!("starting pahkat-reposrv");
 
@@ -379,7 +394,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         figment = figment.merge(FigmentToml::file(config_path));
     }
 
-    let config: Config = figment.merge(Env::raw()).extract()?;
+    let config: Config = match figment.merge(Env::raw()).extract() {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("Could not load config:");
+            return Err(e.into());
+        }
+    };
 
     Ok(run(config).await?)
 }
