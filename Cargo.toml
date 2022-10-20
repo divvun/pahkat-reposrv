@@ -31,13 +31,8 @@ dunce = "1.0.3"
 async-graphql = { version = "4.0.15", features = ["apollo_tracing"] }
 async-graphql-poem = "4.0.15"
 bytes = "1.2.1"
+arc-ext = { version = "0.1.0", features = ["async-graphql"] }
 
 [features]
 playground = []
 
-# [patch.crates-io]
-# poem = { path = "../../github/poem/poem" }
-# poem-openapi = { path = "../../github/poem/poem-openapi" }
-#[patch."https://github.com/divvun/pahkat.git"]
-#pahkat-types = { path = "../pahkat/pahkat-types" }
-#pahkat-repomgr = { path = "../pahkat/pahkat-repomgr" }

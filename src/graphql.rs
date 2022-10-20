@@ -1,8 +1,14 @@
 use std::sync::Arc;
 
+use arc_ext::{ArcExt, ArcProjectOption};
+use arc_swap::Guard;
 use async_graphql::Object;
+use pahkat_types::{package::Package, repo::Index};
 
-use crate::state::{ServerStatus, REPO_INDEXES, SERVER_STATUS};
+use crate::{
+    state::{ServerStatus, REPO_INDEXES, SERVER_STATUS},
+    RepoIndexData,
+};
 
 pub struct Query;
 
@@ -12,34 +18,43 @@ impl Query {
         SERVER_STATUS.load_full()
     }
 
-    async fn repos<'a>(&self) -> Vec<Repo<'a>> {
+    async fn repos<'a>(&self) -> Vec<Repo> {
         REPO_INDEXES
             .get()
             .unwrap()
-            .keys()
-            .map(|key| Repo { key })
+            .values()
+            .map(|value| Repo {
+                model: value.load(),
+            })
             .collect()
+    }
+
+    async fn repo(&self, id: String) -> Option<Repo> {
+        REPO_INDEXES.get().unwrap().get(&id).map(|value| Repo {
+            model: value.load(),
+        })
     }
 }
 
-struct Repo<'a> {
-    key: &'a str,
+struct Repo {
+    model: Guard<Arc<RepoIndexData>>,
 }
 
 #[Object]
-impl Repo<'_> {
+impl Repo {
     #[graphql(flatten)]
-    async fn _index(&self) -> Arc<pahkat_types::repo::Index> {
-        let repo_indexes = REPO_INDEXES.get().unwrap();
-        let value = repo_indexes.get(self.key).unwrap();
-        let index_data = value.load();
-        index_data.repo_index.clone()
+    async fn _index(&self) -> Arc<Index> {
+        self.model.repo_index.clone()
     }
 
-    async fn packages(&self) -> Arc<[pahkat_types::package::Package]> {
-        let repo_indexes = REPO_INDEXES.get().unwrap();
-        let value = repo_indexes.get(self.key).unwrap();
-        let index_data = value.load();
-        index_data.packages.clone()
+    async fn packages(&self) -> Arc<[Package]> {
+        self.model.packages.clone()
+    }
+
+    async fn package(&self, id: String) -> ArcProjectOption<[Package], Package> {
+        self.model
+            .packages
+            .clone()
+            .project_option(|packages| packages.iter().find(|p| id == p.id()))
     }
 }
