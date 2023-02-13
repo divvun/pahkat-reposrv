@@ -28,7 +28,7 @@ use once_cell::sync::Lazy;
 use pahkat_types::package::{version::SemanticVersion, Version};
 use parking_lot::RwLock;
 use poem::{
-    get, handler, listener::TcpListener, web::Html, EndpointExt, IntoResponse, Result, Route,
+    get, handler, listener::TcpListener, web::Html, EndpointExt, IntoResponse, Result, Route, middleware::Cors,
 };
 use poem_openapi::OpenApiService;
 use serde::{Deserialize, Serialize};
@@ -329,7 +329,8 @@ async fn run(config: Config) -> Result<(), std::io::Error> {
             get(graphql_playground).post(GraphQL::new(schema)),
         )
         .data(config.clone())
-        .data(openapi::ServerToken(config.api_token.clone()));
+        .data(openapi::ServerToken(config.api_token.clone()))
+        .with(Cors::default());
 
     poem::Server::new(TcpListener::bind((config.host, config.port)))
         .run(app)
