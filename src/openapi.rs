@@ -124,8 +124,8 @@ fn modify_repo_metadata(
     };
 
     let inner_req = package::update::Request::builder()
-        .repo_path(path.clone().into())
-        .id(package_id.clone().into())
+        .repo_path(path.into())
+        .id(package_id.into())
         .version(Cow::Owned(version))
         .channel(release.channel.as_ref().map(|x| Cow::Borrowed(&**x)))
         .target(Cow::Borrowed(&release.target))
