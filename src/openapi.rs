@@ -54,8 +54,8 @@ pub struct UpdatePackageMetadataRequest {
 
 #[derive(Object, Debug, Clone)]
 pub struct CreatePackageMetadataRequest {
-    pub name: String,
-    pub description: String,
+    pub name: pahkat_types::LangTagMap<String>,
+    pub description: pahkat_types::LangTagMap<String>,
     pub tags: Vec<String>,
 }
 
