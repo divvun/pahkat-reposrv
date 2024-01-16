@@ -43,6 +43,8 @@ struct UpdatePackageMetadataResponse {
 
 #[derive(Object, Debug, Clone)]
 pub struct UpdatePackageMetadataRequest {
+    pub name: Option<pahkat_types::LangTagMap<String>>,
+    pub description: Option<pahkat_types::LangTagMap<String>>,
     pub version: String,
     pub channel: Option<String>,
     #[oai(default)]
@@ -54,8 +56,8 @@ pub struct UpdatePackageMetadataRequest {
 
 #[derive(Object, Debug, Clone)]
 pub struct CreatePackageMetadataRequest {
-    pub name: String,
-    pub description: String,
+    pub name: pahkat_types::LangTagMap<String>,
+    pub description: pahkat_types::LangTagMap<String>,
     pub tags: Vec<String>,
 }
 
@@ -124,8 +126,10 @@ fn modify_repo_metadata(
     };
 
     let inner_req = package::update::Request::builder()
-        .repo_path(path.clone().into())
-        .id(package_id.clone().into())
+        .repo_path(path.into())
+        .id(package_id.into())
+        .name(release.name.as_ref().map(|x| Cow::Borrowed(&*x)))
+        .description(release.description.as_ref().map(|x| Cow::Borrowed(&*x)))
         .version(Cow::Owned(version))
         .channel(release.channel.as_ref().map(|x| Cow::Borrowed(&**x)))
         .target(Cow::Borrowed(&release.target))
