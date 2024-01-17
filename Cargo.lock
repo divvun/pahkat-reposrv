@@ -1186,7 +1186,7 @@ checksum = "b15813163c1d831bf4a13c3610c05c0d03b39feb07f7e09fa234dac9b15aaf39"
 [[package]]
 name = "pahkat-repomgr"
 version = "2.1.1"
-source = "git+https://github.com/divvun/pahkat.git#389365ba37ff1b107ab356f9c71f8fd64969703c"
+source = "git+https://github.com/divvun/pahkat.git#821654d4c0e6f8b8024030d95cf732bfba1d7b20"
 dependencies = [
  "anyhow",
  "dialoguer",
@@ -1206,7 +1206,7 @@ dependencies = [
 
 [[package]]
 name = "pahkat-reposrv"
-version = "0.3.9"
+version = "0.3.10"
 dependencies = [
  "anyhow",
  "arc-ext",
@@ -1239,7 +1239,7 @@ dependencies = [
 [[package]]
 name = "pahkat-types"
 version = "2.1.1"
-source = "git+https://github.com/divvun/pahkat.git#389365ba37ff1b107ab356f9c71f8fd64969703c"
+source = "git+https://github.com/divvun/pahkat.git#821654d4c0e6f8b8024030d95cf732bfba1d7b20"
 dependencies = [
  "anyhow",
  "async-graphql",
