@@ -133,7 +133,7 @@ Let's say you wanted to release version 1.6.9. You'd do this:
 1. Update the version number in `Cargo.toml` to 1.6.9 and commit your changes
 2. `git commit -m "Bump version to 1.6.9"`
 3. Create a tag with the same version you set in `Cargo.toml`, for example: `git tag 1.6.9`
-4. Push the tag *before* pushing main:`git push 1.6.9`
+4. Push the tag *before* pushing main:`git push origin 1.6.9`
 5. `git push`
 
 :warning: **Beware:** your git client might betray you. It's recommended when releasing a new version to follow the steps exactly as above from the command line.
