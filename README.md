@@ -136,4 +136,6 @@ Let's say you wanted to release version 1.6.9. You'd do this:
 4. Push the tag *before* pushing main:`git push origin 1.6.9`
 5. `git push`
 
+Note: you might have to repeat the above steps several times before it works. The CI intermittently ignores tag pushes. 
+
 :warning: **Beware:** your git client might betray you. It's recommended when releasing a new version to follow the steps exactly as above from the command line.
