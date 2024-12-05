@@ -9,7 +9,7 @@
 [`pahkat-uploader`](https://github.com/divvun/pahkat/tree/main/pahkat-uploader) can be used to upload new or modify existing packages. It uses the API provided by this repo to do so.
 
 `pahkat-reposrv` uses 
- [`pahkat-repomgr`](https://github.com/divvun/pahkat/tree/main/pahkat-repmgr) to add, remove, and modify metadata in the git repo that stores all package metadata.
+ [`pahkat-repomgr`](https://github.com/divvun/pahkat/tree/main/pahkat-repomgr) to add, remove, and modify metadata in the git repo that stores all package metadata.
 
 ## Development
 
